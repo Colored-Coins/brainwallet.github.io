@@ -158,7 +158,7 @@ var TX = new function () {
 
     this.deserialize = function(bytes) {
         var sendTx = new Bitcoin.Transaction();
-
+        console.log('deserialize')
         var f = bytes.slice(0);
         var tx_ver = u32(f);
         var vin_sz = readVarInt(f);
@@ -171,7 +171,7 @@ var TX = new function () {
             var script = readString(f);
             var seq = u32(f);
             var txin = new Bitcoin.TransactionIn({
-                outpoint: { 
+                outpoint: {
                     hash: Crypto.util.bytesToBase64(op),
                     index: n
                 },
@@ -189,12 +189,10 @@ var TX = new function () {
         for (var i = 0; i < vout_sz; i++) {
             var value = u64(f);
             var script = readString(f);
-
             var txout = new Bitcoin.TransactionOut({
                 value: value,
                 script: new Bitcoin.Script(script)
             });
-
             sendTx.addOutput(txout);
         }
         var lock_time = u32(f);
@@ -239,7 +237,22 @@ var TX = new function () {
             var fval = parseFloat(Bitcoin.Util.formatValue(bytes.reverse()));
             var value = fval.toFixed(8);
             var spk = dumpScript(txout.script);
-            r['out'].push({'value' : value, 'scriptPubKey': spk});
+            var answer = {'value' : value, 'scriptPubKey': spk}
+
+            // parse ColoredCoins Transaction
+            try {
+                var op_return = spk.split(' ')[1]
+                var res = op_return.substring(0, 4)
+                if (res === '4343') {
+                    var ccTx = new window.CCTX(op_return)
+                    answer.coloredCoinsData = ccTx
+                }
+            } catch (e) {
+                console.error(e)
+            }
+            //
+
+            r['out'].push(answer);
         }
 
         return JSON.stringify(r, null, 4);
@@ -267,7 +280,7 @@ var TX = new function () {
             var seq = txi['sequence'] === undefined ? 4294967295 : txi['sequence'];
 
             var txin = new Bitcoin.TransactionIn({
-                outpoint: { 
+                outpoint: {
                     hash: Crypto.util.bytesToBase64(hash.reverse()),
                     index: n
                 },
