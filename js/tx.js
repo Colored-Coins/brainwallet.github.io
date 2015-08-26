@@ -237,6 +237,7 @@ var TX = new function () {
             var fval = parseFloat(Bitcoin.Util.formatValue(bytes.reverse()));
             var value = fval.toFixed(8);
             var spk = dumpScript(txout.script);
+            console.log(spk)
             var answer = {'value' : value, 'scriptPubKey': spk}
 
             // parse ColoredCoins Transaction
@@ -244,8 +245,9 @@ var TX = new function () {
                 var op_return = spk.split(' ')[1]
                 var res = op_return.substring(0, 4)
                 if (res === '4343') {
-                    var ccTx = new window.CCTX(op_return)
-                    answer.coloredCoinsData = ccTx
+                    console.log(op_return)
+                    var ccTx = window.CCTX.fromHex(op_return)
+                    answer.coloredCoinsData = ccTx.toJson()
                 }
             } catch (e) {
                 console.error(e)
