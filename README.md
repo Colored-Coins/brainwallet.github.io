@@ -1,6 +1,8 @@
 Brainwallet
 ===========
 
+Hosted version: [weeeee](https://htmlpreview.github.io/?https://github.com/Colored-Coins/brainwallet.github.io/blob/master/index.html)
+
 JavaScript Client-Side Bitcoin Address Generator
 
 Notable features
