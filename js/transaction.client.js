@@ -1,4 +1,170 @@
-(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+!function(e){if("object"==typeof exports&&"undefined"!=typeof module)module.exports=e();else if("function"==typeof define&&define.amd)define([],e);else{var f;"undefined"!=typeof window?f=window:"undefined"!=typeof global?f=global:"undefined"!=typeof self&&(f=self),f.CCTX=e()}}(function(){var define,module,exports;return (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+(function (Buffer){
+var PROTOCOL = 0x4343
+var VERSION = 0x01
+var MAXBYTESIZE = 40
+var OP_CODES = {
+  'issuance': {
+    'start': 0x00,
+    'end': 0x0f,
+    'encoder': require('cc-issuance-encoder')
+  },
+  'transfer': {
+    'start': 0x10,
+    'end': 0x1f,
+    'encoder': require('cc-transfer-encoder')
+  }
+}
+
+var encodingLookup = {}
+
+for (var transactionType in OP_CODES) {
+  for (var j = OP_CODES[transactionType].start; j <= OP_CODES[transactionType].end; j++) {
+    encodingLookup[j] = {}
+    encodingLookup[j].encode = OP_CODES[transactionType].encoder.encode
+    encodingLookup[j].decode = OP_CODES[transactionType].encoder.decode
+    encodingLookup[j].type = transactionType
+  }
+}
+
+var paymentsInputToSkip = function (payments) {
+  var result = JSON.parse(JSON.stringify(payments))
+  result.sort(function (a, b) {
+    return a.input - b.input
+  })
+  for (var i = 0; i < result.length; i++) {
+    var skip = false
+    if (result[i + 1] && result[i + 1].input > result[i].input) {
+      skip = true
+    }
+    delete result[i].input
+    result[i].skip = skip
+  }
+  return result
+}
+
+var paymentsSkipToInput = function (payments) {
+  var paymentsDecoded = []
+  var input = 0
+  for (var i = 0; i < payments.length; i++) {
+    paymentsDecoded.push({
+      input: input,
+      amountOfUnits: payments[i].amountOfUnits,
+      output: payments[i].output,
+      range: payments[i].range,
+      precent: payments[i].precent
+    })
+    if (payments[i].skip) input = input + 1
+  }
+  return paymentsDecoded
+}
+
+function Transaction (data) {
+  data = data || {}
+  this.type = data.type || 'transfer'
+  this.noRules = data.noRules || true
+  this.payments = data.payments || []
+  this.protocol = data.protocol || PROTOCOL
+  this.version = data.version || VERSION
+  this.lockStatus = data.lockStatus
+  this.divisibility = data.divisibility
+  this.amountOfUnits = data.amountOfUnits
+  this.multiSig = data.multiSig || []
+  if (typeof this.amountOfUnits !== 'undefined'
+    && typeof this.divisibility !== 'undefined') {
+    this.amount = this.amountOfUnits / Math.pow(10, this.divisibility)
+  }
+  this.sha2 = data.sha2
+  this.torrentHash = data.torrentHash
+}
+
+Transaction.fromHex = function (op_return) {
+  if (!Buffer.isBuffer(op_return)) {
+    op_return = new Buffer(op_return, 'hex')
+  }
+  var decoder = encodingLookup[op_return[3]]
+  var rawData = decoder.decode(op_return)
+  rawData.type = decoder.type
+  rawData.payments = paymentsSkipToInput(rawData.payments)
+  return new Transaction(rawData)
+}
+
+Transaction.newTransaction = function (protocol, version) {
+  return new Transaction({protocol: protocol, version: version})
+}
+
+Transaction.prototype.addPayment = function (input, amount, output, range, precent) {
+  range = range || false
+  precent = precent || false
+  this.payments.push({input: input, amountOfUnits: amount, output: output, range: range, precent: precent})
+}
+
+Transaction.prototype.setAmount = function (amount, divisibility) {
+  if (typeof amount === 'undefined') throw new Error('Amount has to be defined')
+  this.type = 'issuance'
+  this.divisibility = divisibility || 0
+  this.amount = amount
+  this.amountOfUnits = this.amount * Math.pow(10, this.divisibility)
+}
+
+Transaction.prototype.setLockStatus = function (lockStatus) {
+  this.lockStatus = lockStatus
+  this.type = 'issuance'
+}
+
+Transaction.prototype.allowRules = function () {
+  this.noRules = false
+}
+
+Transaction.prototype.shiftOutputs = function (shiftAmount) {
+  shiftAmount = shiftAmount || 1
+  this.payments.forEach(function (payment) {
+    payment.output += shiftAmount
+  })
+}
+
+Transaction.prototype.setHash = function (torrentHash, sha2) {
+  if (!torrentHash) throw new Error('Can\'t set hashes without the torrent hash')
+  if (!Buffer.isBuffer(torrentHash)) torrentHash = new Buffer(torrentHash, 'hex')
+  this.torrentHash = torrentHash
+  if (sha2) {
+    if (!Buffer.isBuffer(sha2)) sha2 = new Buffer(sha2, 'hex')
+    this.sha2 = sha2
+  }
+}
+
+Transaction.prototype.encode = function () {
+  var encoder = OP_CODES[this.type].encoder
+  this.payments = paymentsInputToSkip(this.payments)
+  var result = encoder.encode(this, MAXBYTESIZE)
+  this.payments = paymentsSkipToInput(this.payments)
+  return result
+}
+
+Transaction.prototype.toJson = function () {
+  var data = {}
+  data.payments = this.payments
+  data.protocol = this.protocol
+  data.version = this.version
+  data.type = this.type
+  if (this.type === 'issuance') {
+    data.lockStatus = this.lockStatus
+    data.divisibility = this.divisibility
+    data.amount = this.amount
+    data.amountOfUnits = this.amount * Math.pow(10, this.divisibility)
+  }
+  data.multiSig = this.multiSig
+  if (this.torrentHash) {
+    data.torrentHash = this.torrentHash.toString('hex')
+    if (this.sha2) data.sha2 = this.sha2.toString('hex')
+  }
+  return data
+}
+
+module.exports = Transaction
+
+}).call(this,require("buffer").Buffer)
+},{"buffer":9,"cc-issuance-encoder":2,"cc-transfer-encoder":8}],2:[function(require,module,exports){
 (function (Buffer){
 var OP_CODES = [
   new Buffer([0x00]), // wild-card to be defined
@@ -114,7 +280,7 @@ module.exports = {
 }
 
 }).call(this,require("buffer").Buffer)
-},{"./issueFlagsEncoder.js":2,"buffer":10,"cc-payment-encoder":4,"sffc-encoder":5}],2:[function(require,module,exports){
+},{"./issueFlagsEncoder.js":3,"buffer":9,"cc-payment-encoder":4,"sffc-encoder":5}],3:[function(require,module,exports){
 (function (Buffer){
 var padLeadingZeros = function (hex, byteSize) {
   return (hex.length === byteSize * 2) && hex || padLeadingZeros('0' + hex, byteSize)
@@ -144,7 +310,82 @@ module.exports = {
 }
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":10}],3:[function(require,module,exports){
+},{"buffer":9}],4:[function(require,module,exports){
+(function (Buffer){
+var flagMask = 0xe0
+var skipFlag = 0x80
+var rangeFlag = 0x40
+var precentFlag = 0x20
+var sffc = require('sffc-encoder')
+
+var padLeadingZeros = function (hex, byteSize) {
+  return (hex.length === byteSize * 2) && hex || padLeadingZeros('0' + hex, byteSize)
+}
+
+module.exports = {
+  encode: function (paymentObject) {
+    var skip = paymentObject.skip || false
+    var range = paymentObject.range || false
+    var precent = paymentObject.precent || false
+    if (typeof paymentObject.output === 'undefined') throw new Error('Needs output value')
+    var output = paymentObject.output
+    if (typeof paymentObject.amountOfUnits === 'undefined') throw new Error('Needs amount value')
+    var amountOfUnits = paymentObject.amountOfUnits
+    var outputBinaryLength = output.toString(2).length
+    if (output < 0) throw new Error('Output Can\'t be negative')
+    if ((!range && outputBinaryLength > 5) || (range && outputBinaryLength > 13)) {
+      throw new Error('Output value is out of bounds')
+    }
+    var outputString = padLeadingZeros(output.toString(16), +range + 1)
+    var buf = new Buffer(outputString, 'hex')
+    if (skip) buf[0] = buf[0] | skipFlag
+    if (range) buf[0] = buf[0] | rangeFlag
+    if (precent) buf[0] = buf[0] | precentFlag
+
+    return Buffer.concat([buf, sffc.encode(amountOfUnits)])
+  },
+
+  decode: function (consume) {
+    var flagsBuffer = consume(1)[0]
+    if (typeof flagsBuffer === 'undefined') throw new Error('No flags are found')
+    var output = new Buffer([flagsBuffer & (~flagMask)])
+    var flags = flagsBuffer & flagMask
+    var skip = !!(flags & skipFlag)
+    var range = !!(flags & rangeFlag)
+    var precent = !!(flags & precentFlag)
+    if (range) {
+      output = Buffer.concat([output, consume(1)])
+    }
+    var amountOfUnits = sffc.decode(consume)
+    return {skip: skip, range: range, precent: precent, output: parseInt(output.toString('hex'), 16), amountOfUnits: amountOfUnits}
+  },
+
+  encodeBulk: function (paymentsArray) {
+    var payments = new Buffer(0)
+    var amountOfPayments = paymentsArray.length
+    for (var i = 0; i < amountOfPayments; i++) {
+      var payment = paymentsArray[i]
+      var paymentCode = this.encode(payment)
+      payments = Buffer.concat([payments, paymentCode])
+    }
+    return payments
+  },
+
+  decodeBulk: function (consume, paymentsArray) {
+    paymentsArray = paymentsArray || []
+    while (true) {
+      try {
+        paymentsArray.push(this.decode(consume))
+        this.decodeBulk(consume, paymentsArray)
+      } catch (e) {
+        return paymentsArray
+      }
+    }
+  }
+}
+
+}).call(this,require("buffer").Buffer)
+},{"buffer":9,"sffc-encoder":5}],5:[function(require,module,exports){
 (function (Buffer){
 var flagMask = 0xe0
 var encodingSchemeTable =
@@ -258,88 +499,11 @@ module.exports = {
 }
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":10}],4:[function(require,module,exports){
-(function (Buffer){
-var flagMask = 0xe0
-var skipFlag = 0x80
-var rangeFlag = 0x40
-var percentFlag = 0x20
-var sffc = require('sffc-encoder')
-
-var padLeadingZeros = function (hex, byteSize) {
-  return (hex.length === byteSize * 2) && hex || padLeadingZeros('0' + hex, byteSize)
-}
-
-module.exports = {
-  encode: function (paymentObject) {
-    var skip = paymentObject.skip || false
-    var range = paymentObject.range || false
-    var percent = paymentObject.percent || false
-    if (typeof paymentObject.output === 'undefined') throw new Error('Needs output value')
-    var output = paymentObject.output
-    if (typeof paymentObject.amountOfUnits === 'undefined') throw new Error('Needs amount value')
-    var amountOfUnits = paymentObject.amountOfUnits
-    var outputBinaryLength = output.toString(2).length
-    if (output < 0) throw new Error('Output Can\'t be negative')
-    if ((!range && outputBinaryLength > 5) || (range && outputBinaryLength > 13)) {
-      throw new Error('Output value is out of bounds')
-    }
-    var outputString = padLeadingZeros(output.toString(16), +range + 1)
-    var buf = new Buffer(outputString, 'hex')
-    if (skip) buf[0] = buf[0] | skipFlag
-    if (range) buf[0] = buf[0] | rangeFlag
-    if (percent) buf[0] = buf[0] | percentFlag
-
-    return Buffer.concat([buf, sffc.encode(amountOfUnits)])
-  },
-
-  decode: function (consume) {
-    var flagsBuffer = consume(1)[0]
-    if (typeof flagsBuffer === 'undefined') throw new Error('No flags are found')
-    var output = new Buffer([flagsBuffer & (~flagMask)])
-    var flags = flagsBuffer & flagMask
-    var skip = !!(flags & skipFlag)
-    var range = !!(flags & rangeFlag)
-    var percent = !!(flags & percentFlag)
-    if (range) {
-      output = Buffer.concat([output, consume(1)])
-    }
-    var amountOfUnits = sffc.decode(consume)
-    return {skip: skip, range: range, percent: percent, output: parseInt(output.toString('hex'), 16), amountOfUnits: amountOfUnits}
-  },
-
-  encodeBulk: function (paymentsArray) {
-    var payments = new Buffer(0)
-    var amountOfPayments = paymentsArray.length
-    for (var i = 0; i < amountOfPayments; i++) {
-      var payment = paymentsArray[i]
-      var paymentCode = this.encode(payment)
-      payments = Buffer.concat([payments, paymentCode])
-    }
-    return payments
-  },
-
-  decodeBulk: function (consume, paymentsArray) {
-    paymentsArray = paymentsArray || []
-    while (true) {
-      try {
-        paymentsArray.push(this.decode(consume))
-        this.decodeBulk(consume, paymentsArray)
-      } catch (e) {
-        return paymentsArray
-      }
-    }
-  }
-}
-
-}).call(this,require("buffer").Buffer)
-},{"buffer":10,"sffc-encoder":3}],5:[function(require,module,exports){
-module.exports=require(3)
-},{"/Users/thehobbit85/Colu/my-node-modules/ColoredCoins/ColoredCoinObjects/Transaction/node_modules/cc-issuance-encoder/node_modules/cc-payment-encoder/node_modules/sffc-encoder/sffcEncoder.js":3,"buffer":10}],6:[function(require,module,exports){
-module.exports=require(3)
-},{"/Users/thehobbit85/Colu/my-node-modules/ColoredCoins/ColoredCoinObjects/Transaction/node_modules/cc-issuance-encoder/node_modules/cc-payment-encoder/node_modules/sffc-encoder/sffcEncoder.js":3,"buffer":10}],7:[function(require,module,exports){
+},{"buffer":9}],6:[function(require,module,exports){
+module.exports=require(5)
+},{"/Users/thehobbit85/Colu/my-node-modules/ColoredCoins/ColoredCoinObjects/Transaction/node_modules/cc-issuance-encoder/node_modules/sffc-encoder/sffcEncoder.js":5,"buffer":9}],7:[function(require,module,exports){
 module.exports=require(4)
-},{"/Users/thehobbit85/Colu/my-node-modules/ColoredCoins/ColoredCoinObjects/Transaction/node_modules/cc-issuance-encoder/node_modules/cc-payment-encoder/paymentEncoder.js":4,"buffer":10,"sffc-encoder":6}],8:[function(require,module,exports){
+},{"/Users/thehobbit85/Colu/my-node-modules/ColoredCoins/ColoredCoinObjects/Transaction/node_modules/cc-issuance-encoder/node_modules/cc-payment-encoder/paymentEncoder.js":4,"buffer":9,"sffc-encoder":6}],8:[function(require,module,exports){
 (function (Buffer){
 var OP_CODES = [
   new Buffer([0x10]), // All Hashes in OP_RETURN - Pay-to-PubkeyHash
@@ -439,173 +603,7 @@ module.exports = {
 }
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":10,"cc-payment-encoder":7}],9:[function(require,module,exports){
-(function (Buffer){
-var PROTOCOL = 0x4343
-var VERSION = 0x01
-var MAXBYTESIZE = 40
-var OP_CODES = {
-  'issuance': {
-    'start': 0x00,
-    'end': 0x0f,
-    'encoder': require('cc-issuance-encoder')
-  },
-  'transfer': {
-    'start': 0x10,
-    'end': 0x1f,
-    'encoder': require('cc-transfer-encoder')
-  }
-}
-
-var encodingLookup = {}
-
-for (var transactionType in OP_CODES) {
-  for (var j = OP_CODES[transactionType].start; j <= OP_CODES[transactionType].end; j++) {
-    encodingLookup[j] = {}
-    encodingLookup[j].encode = OP_CODES[transactionType].encoder.encode
-    encodingLookup[j].decode = OP_CODES[transactionType].encoder.decode
-    encodingLookup[j].type = transactionType
-  }
-}
-
-var paymentsInputToSkip = function (payments) {
-  var result = JSON.parse(JSON.stringify(payments))
-  result.sort(function (a, b) {
-    return a.input - b.input
-  })
-  for (var i = 0; i < result.length; i++) {
-    var skip = false
-    if (result[i + 1] && result[i + 1].input > result[i].input) {
-      skip = true
-    }
-    delete result[i].input
-    result[i].skip = skip
-  }
-  return result
-}
-
-var paymentsSkipToInput = function (payments) {
-  var paymentsDecoded = []
-  var input = 0
-  for (var i = 0; i < payments.length; i++) {
-    paymentsDecoded.push({
-      input: input,
-      amountOfUnits: payments[i].amountOfUnits,
-      output: payments[i].output,
-      range: payments[i].range,
-      percent: payments[i].percent
-    })
-    if (payments[i].skip) input = input + 1
-  }
-  return paymentsDecoded
-}
-
-function Transaction (data) {
-  data = data || {}
-  this.type = data.type || 'transfer'
-  this.noRules = data.noRules || true
-  this.payments = data.payments || []
-  this.protocol = data.protocol || PROTOCOL
-  this.version = data.version || VERSION
-  this.lockStatus = data.lockStatus
-  this.divisibility = data.divisibility
-  this.amountOfUnits = data.amountOfUnits
-  this.multiSig = data.multiSig || []
-  if (typeof this.amountOfUnits !== 'undefined'
-    && typeof this.divisibility !== 'undefined') {
-    this.amount = this.amountOfUnits / Math.pow(10, this.divisibility)
-  }
-  this.sha2 = data.sha2
-  this.torrentHash = data.torrentHash
-}
-
-Transaction.fromHex = function (op_return) {
-  if (!Buffer.isBuffer(op_return)) {
-    op_return = new Buffer(op_return, 'hex')
-  }
-  var decoder = encodingLookup[op_return[3]]
-  var rawData = decoder.decode(op_return)
-  rawData.type = decoder.type
-  rawData.payments = paymentsSkipToInput(rawData.payments)
-  return new Transaction(rawData)
-}
-
-Transaction.newTransaction = function (protocol, version) {
-  return new Transaction({protocol: protocol, version: version})
-}
-
-Transaction.prototype.addPayment = function (input, amount, output, range, percent) {
-  range = range || false
-  percent = percent || false
-  this.payments.push({input: input, amountOfUnits: amount, output: output, range: range, percent: percent})
-}
-
-Transaction.prototype.setAmount = function (amount, divisibility) {
-  if (typeof amount === 'undefined') throw new Error('Amount has to be defined')
-  this.type = 'issuance'
-  this.divisibility = divisibility || 0
-  this.amount = amount
-  this.amountOfUnits = this.amount * Math.pow(10, this.divisibility)
-}
-
-Transaction.prototype.setLockStatus = function (lockStatus) {
-  this.lockStatus = lockStatus
-  this.type = 'issuance'
-}
-
-Transaction.prototype.allowRules = function () {
-  this.noRules = false
-}
-
-Transaction.prototype.shiftOutputs = function (shiftAmount) {
-  shiftAmount = shiftAmount || 1
-  this.payments.forEach(function (payment) {
-    payment.output += shiftAmount
-  })
-}
-
-Transaction.prototype.setHash = function (torrentHash, sha2) {
-  if (!torrentHash) throw new Error('Can\'t set hashes without the torrent hash')
-  if (!Buffer.isBuffer(torrentHash)) torrentHash = new Buffer(torrentHash, 'hex')
-  this.torrentHash = torrentHash
-  if (sha2) {
-    if (!Buffer.isBuffer(sha2)) sha2 = new Buffer(sha2, 'hex')
-    this.sha2 = sha2
-  }
-}
-
-Transaction.prototype.encode = function () {
-  var encoder = OP_CODES[this.type].encoder
-  this.payments = paymentsInputToSkip(this.payments)
-  var result = encoder.encode(this, MAXBYTESIZE)
-  this.payments = paymentsSkipToInput(this.payments)
-  return result
-}
-
-Transaction.prototype.toJson = function () {
-  var data = {}
-  data.payments = this.payments
-  data.protocol = this.protocol
-  data.version = this.version
-  data.type = this.type
-  if (this.type === 'issuance') {
-    data.lockStatus = this.lockStatus
-    data.divisibility = this.divisibility
-    data.amount = this.amount
-    data.amountOfUnits = this.amount * Math.pow(10, this.divisibility)
-  }
-  data.multiSig = this.multiSig
-  if (this.torrentHash) {
-    data.torrentHash = this.torrentHash.toString('hex')
-    if (this.sha2) data.sha2 = this.sha2.toString('hex')
-  }
-  return data
-}
-
-module.exports = Transaction
-
-}).call(this,require("buffer").Buffer)
-},{"buffer":10,"cc-issuance-encoder":1,"cc-transfer-encoder":8}],10:[function(require,module,exports){
+},{"buffer":9,"cc-payment-encoder":7}],9:[function(require,module,exports){
 /*!
  * The buffer module from node.js, for the browser.
  *
@@ -1659,7 +1657,7 @@ function decodeUtf8Char (str) {
   }
 }
 
-},{"base64-js":11,"ieee754":12,"is-array":13}],11:[function(require,module,exports){
+},{"base64-js":10,"ieee754":11,"is-array":12}],10:[function(require,module,exports){
 var lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 ;(function (exports) {
@@ -1781,7 +1779,7 @@ var lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 	exports.fromByteArray = uint8ToBase64
 }(typeof exports === 'undefined' ? (this.base64js = {}) : exports))
 
-},{}],12:[function(require,module,exports){
+},{}],11:[function(require,module,exports){
 exports.read = function(buffer, offset, isLE, mLen, nBytes) {
   var e, m,
       eLen = nBytes * 8 - mLen - 1,
@@ -1867,7 +1865,7 @@ exports.write = function(buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128;
 };
 
-},{}],13:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 
 /**
  * isArray
@@ -1902,4 +1900,5 @@ module.exports = isArray || function (val) {
   return !! val && '[object Array]' == str.call(val);
 };
 
-},{}]},{},[9]);
+},{}]},{},[1])(1)
+});
