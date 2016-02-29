@@ -49,7 +49,7 @@ var paymentsSkipToInput = function (payments) {
   for (var i = 0; i < payments.length; i++) {
     paymentsDecoded.push({
       input: input,
-      amountOfUnits: payments[i].amountOfUnits,
+      amount: payments[i].amount,
       output: payments[i].output,
       range: payments[i].range,
       precent: payments[i].precent
@@ -68,12 +68,8 @@ function Transaction (data) {
   this.version = data.version || VERSION
   this.lockStatus = data.lockStatus
   this.divisibility = data.divisibility
-  this.amountOfUnits = data.amountOfUnits
+  this.amount = data.amount
   this.multiSig = data.multiSig || []
-  if (typeof this.amountOfUnits !== 'undefined'
-    && typeof this.divisibility !== 'undefined') {
-    this.amount = this.amountOfUnits / Math.pow(10, this.divisibility)
-  }
   this.sha2 = data.sha2
   this.torrentHash = data.torrentHash
 }
@@ -96,7 +92,7 @@ Transaction.newTransaction = function (protocol, version) {
 Transaction.prototype.addPayment = function (input, amount, output, range, precent) {
   range = range || false
   precent = precent || false
-  this.payments.push({input: input, amountOfUnits: amount, output: output, range: range, precent: precent})
+  this.payments.push({input: input, amount: amount, output: output, range: range, precent: precent})
 }
 
 Transaction.prototype.setAmount = function (amount, divisibility) {
@@ -104,7 +100,6 @@ Transaction.prototype.setAmount = function (amount, divisibility) {
   this.type = 'issuance'
   this.divisibility = divisibility || 0
   this.amount = amount
-  this.amountOfUnits = this.amount * Math.pow(10, this.divisibility)
 }
 
 Transaction.prototype.setLockStatus = function (lockStatus) {
@@ -151,7 +146,6 @@ Transaction.prototype.toJson = function () {
     data.lockStatus = this.lockStatus
     data.divisibility = this.divisibility
     data.amount = this.amount
-    data.amountOfUnits = this.amount * Math.pow(10, this.divisibility)
   }
   data.multiSig = this.multiSig
   if (this.torrentHash) {
@@ -191,10 +185,15 @@ var padLeadingZeros = function (hex, byteSize) {
   return (hex.length === byteSize * 2) ? hex : padLeadingZeros('0' + hex, byteSize)
 }
 
+var decodeAmountByVersion = function (version, consume, divisibility) {
+  var decodedAmount = sffc.decode(consume)
+  return (version == 0x01)? (decodedAmount / Math.pow(10, divisibility)) : decodedAmount
+}
+
 module.exports = {
   encode: function (data, byteSize) {
     if (!data) throw new Error('Missing Data')
-    if (typeof data.amountOfUnits === 'undefined') throw new Error('Missing amountOfUnits')
+    if (typeof data.amount === 'undefined') throw new Error('Missing amount')
     if (typeof data.lockStatus === 'undefined') throw new Error('Missing lockStatus')
     if (typeof data.divisibility === 'undefined') throw new Error('Missing divisibility')
     if (typeof data.protocol === 'undefined') throw new Error('Missing protocol')
@@ -204,11 +203,11 @@ module.exports = {
     var protocol = new Buffer(padLeadingZeros(data.protocol.toString(16), 2), 'hex')
     var version = new Buffer([data.version])
     var issueHeader = Buffer.concat([protocol, version])
-    var amountOfUnits = sffc.encode(data.amountOfUnits)
+    var amount = sffc.encode(data.amount)
     var payments = new Buffer(0)
     if (data.payments) payments = paymentCodex.encodeBulk(data.payments)
     var issueFlagsByte = issueFlagsCodex.encode({divisibility: data.divisibility, lockStatus: data.lockStatus})
-    var issueTail = Buffer.concat([amountOfUnits, payments, issueFlagsByte])
+    var issueTail = Buffer.concat([amount, payments, issueFlagsByte])
     var issueByteSize = issueHeader.length + issueTail.length + 1
 
     if (issueByteSize > byteSize) throw new Error('Data code is bigger then the allowed byte size')
@@ -272,7 +271,7 @@ module.exports = {
       throw new Error('Unrecognized Code')
     }
 
-    data.amountOfUnits = sffc.decode(consume)
+    data.amount = decodeAmountByVersion(data.version, consume, data.divisibility)
     data.payments = paymentCodex.decodeBulk(consume)
 
     return data
@@ -329,8 +328,8 @@ module.exports = {
     var precent = paymentObject.precent || false
     if (typeof paymentObject.output === 'undefined') throw new Error('Needs output value')
     var output = paymentObject.output
-    if (typeof paymentObject.amountOfUnits === 'undefined') throw new Error('Needs amount value')
-    var amountOfUnits = paymentObject.amountOfUnits
+    if (typeof paymentObject.amount === 'undefined') throw new Error('Needs amount value')
+    var amount = paymentObject.amount
     var outputBinaryLength = output.toString(2).length
     if (output < 0) throw new Error('Output Can\'t be negative')
     if ((!range && outputBinaryLength > 5) || (range && outputBinaryLength > 13)) {
@@ -342,7 +341,7 @@ module.exports = {
     if (range) buf[0] = buf[0] | rangeFlag
     if (precent) buf[0] = buf[0] | precentFlag
 
-    return Buffer.concat([buf, sffc.encode(amountOfUnits)])
+    return Buffer.concat([buf, sffc.encode(amount)])
   },
 
   decode: function (consume) {
@@ -356,8 +355,8 @@ module.exports = {
     if (range) {
       output = Buffer.concat([output, consume(1)])
     }
-    var amountOfUnits = sffc.decode(consume)
-    return {skip: skip, range: range, precent: precent, output: parseInt(output.toString('hex'), 16), amountOfUnits: amountOfUnits}
+    var amount = sffc.decode(consume)
+    return {skip: skip, range: range, precent: precent, output: parseInt(output.toString('hex'), 16), amount: amount}
   },
 
   encodeBulk: function (paymentsArray) {
