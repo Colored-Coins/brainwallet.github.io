@@ -13,6 +13,11 @@ var OP_CODES = {
     'start': 0x10,
     'end': 0x1f,
     'encoder': require('cc-transfer-encoder')
+  },
+  'burn': {
+    'start': 0x20,
+    'end': 0x2f,
+    'encoder': require('cc-transfer-encoder')
   }
 }
 
@@ -47,13 +52,11 @@ var paymentsSkipToInput = function (payments) {
   var paymentsDecoded = []
   var input = 0
   for (var i = 0; i < payments.length; i++) {
-    paymentsDecoded.push({
-      input: input,
-      amount: payments[i].amount,
-      output: payments[i].output,
-      range: payments[i].range,
-      precent: payments[i].precent
-    })
+    var paymentDecoded = payments[i].burn ? {burn: true} : {range: payments[i].range, output: payments[i].output}
+    paymentDecoded.input = input
+    paymentDecoded.percent = payments[i].percent
+    paymentDecoded.amount = payments[i].amount
+    paymentsDecoded.push(paymentDecoded)
     if (payments[i].skip) input = input + 1
   }
   return paymentsDecoded
@@ -93,6 +96,14 @@ Transaction.prototype.addPayment = function (input, amount, output, range, prece
   range = range || false
   precent = precent || false
   this.payments.push({input: input, amount: amount, output: output, range: range, precent: precent})
+}
+
+Transaction.prototype.addBurn = function (input, amount, percent) {
+  if (this.type === 'issuance') {
+    throw new Error('Can\'t add burn payment to an issuance transaction')
+  }
+  this.payments.push({input: input, amount: amount, percent: percent, burn: true})
+  this.type = 'burn'
 }
 
 Transaction.prototype.setAmount = function (amount, divisibility) {
@@ -144,6 +155,7 @@ Transaction.prototype.toJson = function () {
   data.type = this.type
   if (this.type === 'issuance') {
     data.lockStatus = this.lockStatus
+    data.aggregationPolicy = this.aggregationPolicy
     data.divisibility = this.divisibility
     data.amount = this.amount
   }
@@ -314,7 +326,7 @@ module.exports = {
 var flagMask = 0xe0
 var skipFlag = 0x80
 var rangeFlag = 0x40
-var precentFlag = 0x20
+var percentFlag = 0x20
 var sffc = require('sffc-encoder')
 
 var padLeadingZeros = function (hex, byteSize) {
@@ -325,7 +337,7 @@ module.exports = {
   encode: function (paymentObject) {
     var skip = paymentObject.skip || false
     var range = paymentObject.range || false
-    var precent = paymentObject.precent || false
+    var percent = paymentObject.percent || false
     if (typeof paymentObject.output === 'undefined') throw new Error('Needs output value')
     var output = paymentObject.output
     if (typeof paymentObject.amount === 'undefined') throw new Error('Needs amount value')
@@ -339,7 +351,7 @@ module.exports = {
     var buf = new Buffer(outputString, 'hex')
     if (skip) buf[0] = buf[0] | skipFlag
     if (range) buf[0] = buf[0] | rangeFlag
-    if (precent) buf[0] = buf[0] | precentFlag
+    if (percent) buf[0] = buf[0] | percentFlag
 
     return Buffer.concat([buf, sffc.encode(amount)])
   },
@@ -351,12 +363,12 @@ module.exports = {
     var flags = flagsBuffer & flagMask
     var skip = !!(flags & skipFlag)
     var range = !!(flags & rangeFlag)
-    var precent = !!(flags & precentFlag)
+    var percent = !!(flags & percentFlag)
     if (range) {
       output = Buffer.concat([output, consume(1)])
     }
     var amount = sffc.decode(consume)
-    return {skip: skip, range: range, precent: precent, output: parseInt(output.toString('hex'), 16), amount: amount}
+    return {skip: skip, range: range, percent: percent, output: parseInt(output.toString('hex'), 16), amount: amount}
   },
 
   encodeBulk: function (paymentsArray) {
@@ -504,16 +516,92 @@ module.exports=require(5)
 module.exports=require(4)
 },{"/Users/thehobbit85/Colu/my-node-modules/ColoredCoins/ColoredCoinObjects/Transaction/node_modules/cc-issuance-encoder/node_modules/cc-payment-encoder/paymentEncoder.js":4,"buffer":9,"sffc-encoder":6}],8:[function(require,module,exports){
 (function (Buffer){
-var OP_CODES = [
-  new Buffer([0x10]), // All Hashes in OP_RETURN - Pay-to-PubkeyHash
+var TYPE_MASK = 0xf0
+var TRANSFER_MASK = 0x10
+var BURN_MASK = 0x20
+var TRANSFER_OP_CODES = [
+  new Buffer([0x10]), // All Hashes in OP_RETURN
   new Buffer([0x11]), // SHA2 in Pay-to-Script-Hash multi-sig output (1 out of 2)
   new Buffer([0x12]), // All Hashes in Pay-to-Script-Hash multi-sig outputs (1 out of 3)
   new Buffer([0x13]), // Low security transaction no SHA2 for torrent data. SHA1 is always inside OP_RETURN in this case.
   new Buffer([0x14]), // Low security transaction no SHA2 for torrent data. SHA1 is always inside OP_RETURN in this case. also no rules inside the metadata (if there are any they will be in ignored)
   new Buffer([0x15])  // No metadata or rules (no SHA1 or SHA2)
 ]
+var BURN_OP_CODES = [
+  new Buffer([0x20]), // All Hashes in OP_RETURN
+  new Buffer([0x21]), // SHA2 in Pay-to-Script-Hash multi-sig output (1 out of 2)
+  new Buffer([0x22]), // All Hashes in Pay-to-Script-Hash multi-sig outputs (1 out of 3)
+  new Buffer([0x23]), // Low security transaction no SHA2 for torrent data. SHA1 is always inside OP_RETURN in this case.
+  new Buffer([0x24]), // Low security transaction no SHA2 for torrent data. SHA1 is always inside OP_RETURN in this case. also no rules inside the metadata (if there are any they will be in ignored)
+  new Buffer([0x25])  // No metadata or rules (no SHA1 or SHA2)
+]
 
-var paymentCodex = require('cc-payment-encoder')
+var transferPaymentEncoder = require('cc-payment-encoder')
+var burnPaymentEncoder = (function () {
+  var basePaymentEncoder = require('cc-payment-encoder')
+
+  var BURN_OUTPUT = 0x1f
+
+  return {
+    encode: function (paymentObject) {
+      if (typeof paymentObject.output === 'undefined' && !paymentObject.burn) {
+        throw new Error('Needs output value or burn flag')
+      }
+      if (typeof paymentObject.output !== 'undefined' && paymentObject.burn) {
+        throw new Error('Received both burn and output')
+      }
+      if (typeof paymentObject.range !== 'undefined' && paymentObject.burn) {
+        throw new Error('Received both burn and range')
+      }
+      if (!paymentObject.range && paymentObject.output === BURN_OUTPUT) {
+        throw new Error('Received range and output values reserved to represent burn (to indicate burn use burn flag)')
+      }
+
+      if (paymentObject.burn) {
+        paymentObject.output = BURN_OUTPUT
+        paymentObject.range = false
+        delete paymentObject.burn
+      }
+
+      return basePaymentEncoder.encode(paymentObject)
+    },
+
+    decode: function (consume) {
+      var ans = basePaymentEncoder.decode(consume)
+      var burn = !ans.range && (ans.output === BURN_OUTPUT)
+      if (burn) {
+        ans.burn = true
+        delete ans.output
+        delete ans.range
+      }
+      return ans
+    },
+
+    encodeBulk: function (paymentsArray) {
+      var payments = new Buffer(0)
+      var amountOfPayments = paymentsArray.length
+      for (var i = 0; i < amountOfPayments; i++) {
+        var payment = paymentsArray[i]
+        var paymentCode = this.encode(payment)
+        payments = Buffer.concat([payments, paymentCode])
+      }
+      return payments
+    },
+
+    decodeBulk: function (consume, paymentsArray) {
+      paymentsArray = paymentsArray || []
+      while (true) {
+        try {
+          paymentsArray.push(this.decode(consume))
+          this.decodeBulk(consume, paymentsArray)
+        } catch (e) {
+          return paymentsArray
+        }
+      }
+    }
+  }
+
+})()
 
 var consumer = function (buff) {
   var curr = 0
@@ -534,11 +622,13 @@ module.exports = {
       throw new Error('Missing Data')
     }
     var opcode
+    var OP_CODES = data.type === 'burn' ? BURN_OP_CODES : TRANSFER_OP_CODES
+    var paymentEncoder = data.type === 'burn' ? burnPaymentEncoder : transferPaymentEncoder
     var hash = new Buffer(0)
     var protocol = new Buffer(padLeadingZeros(data.protocol.toString(16), 2), 'hex')
     var version = new Buffer([data.version])
     var transferHeader = Buffer.concat([protocol, version])
-    var payments = paymentCodex.encodeBulk(data.payments)
+    var payments = paymentEncoder.encodeBulk(data.payments)
     var issueByteSize = transferHeader.length + payments.length + 1
 
     if (issueByteSize > byteSize) throw new Error('Data code is bigger then the allowed byte size')
@@ -576,26 +666,35 @@ module.exports = {
     data.version = parseInt(consume(1).toString('hex'), 16)
     data.multiSig = []
     var opcode = consume(1)
-    if (opcode[0] === OP_CODES[0][0]) {
-      data.torrentHash = consume(20)
-      data.sha2 = consume(32)
-    } else if (opcode[0] === OP_CODES[1][0]) {
-      data.torrentHash = consume(20)
-      data.multiSig.push({'index': 1, 'hashType': 'sha2'})
-    } else if (opcode[0] === OP_CODES[2][0]) {
-      data.multiSig.push({'index': 1, 'hashType': 'sha2'})
-      data.multiSig.push({'index': 2, 'hashType': 'torrentHash'})
-    } else if (opcode[0] === OP_CODES[3][0]) {
-      data.torrentHash = consume(20)
-      data.noRules = false
-    } else if (opcode[0] === OP_CODES[4][0]) {
-      data.torrentHash = consume(20)
-      data.noRules = true
-    } else if (opcode[0] === OP_CODES[5][0]) {
+    var paymentEncoder
+    if ((opcode[0] & TYPE_MASK) === TRANSFER_MASK) {
+      paymentEncoder = transferPaymentEncoder
+    } else if ((opcode[0] & TYPE_MASK) === BURN_MASK) {
+      paymentEncoder = burnPaymentEncoder
     } else {
       throw new Error('Unrecognized Code')
     }
-    data.payments = paymentCodex.decodeBulk(consume)
+
+    if (opcode[0] === TRANSFER_OP_CODES[0][0] || opcode[0] === BURN_OP_CODES[0][0]) {
+      data.torrentHash = consume(20)
+      data.sha2 = consume(32)
+    } else if (opcode[0] === TRANSFER_OP_CODES[1][0] || opcode[0] === BURN_OP_CODES[1][0]) {
+      data.torrentHash = consume(20)
+      data.multiSig.push({'index': 1, 'hashType': 'sha2'})
+    } else if (opcode[0] === TRANSFER_OP_CODES[2][0] || opcode[0] === BURN_OP_CODES[2][0]) {
+      data.multiSig.push({'index': 1, 'hashType': 'sha2'})
+      data.multiSig.push({'index': 2, 'hashType': 'torrentHash'})
+    } else if (opcode[0] === TRANSFER_OP_CODES[3][0] || opcode[0] === BURN_OP_CODES[3][0]) {
+      data.torrentHash = consume(20)
+      data.noRules = false
+    } else if (opcode[0] === TRANSFER_OP_CODES[4][0] || opcode[0] === BURN_OP_CODES[4][0]) {
+      data.torrentHash = consume(20)
+      data.noRules = true
+    } else if (opcode[0] === TRANSFER_OP_CODES[5][0] || opcode[0] === BURN_OP_CODES[5][0]) {
+    } else {
+      throw new Error('Unrecognized Code')
+    }
+    data.payments = paymentEncoder.decodeBulk(consume)
 
     return data
   }

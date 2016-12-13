@@ -247,7 +247,8 @@ var TX = new function () {
                 if (res === '4343') {
                     console.log(op_return)
                     var ccTx = window.CCTX.fromHex(op_return)
-                    answer.coloredCoinsData = ccTx.toJson()
+                    r['ccdata'] = r['ccdata'] || []
+                    r['ccdata'].push(ccTx.toJson())
                 }
             } catch (e) {
                 console.error(e)
